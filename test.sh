@@ -1,0 +1,1 @@
+srun -p xpixel --gres=gpu:1 --job-name=test_swinir python -m torch.distributed.launch --nproc_per_node=1 --master_port=2431 distillation/test.py -opt ./options/test/SwinIR/test_SwinIR_SR_X4.yml --launcher pytorch

@@ -1,0 +1,1 @@
+srun -p xpixel --gres=gpu:4 --job-name=swin_glu --quotatype=auto python -m torch.distributed.launch --nproc_per_node=4 --master_port=2341 distillation/train.py -opt ./options/train/SwinIR/006_SwinIR-S_SingleHead_R4S3D30W16_SRx4.yml --launcher pytorch

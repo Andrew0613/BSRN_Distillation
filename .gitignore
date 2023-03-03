@@ -4,7 +4,7 @@ results/*
 tb_logger/*
 wandb/*
 tmp/*
-
+10.1.8.7:10086
 *.DS_Store
 
 # Byte-compiled / optimized / DLL files

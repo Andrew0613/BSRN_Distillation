@@ -1,0 +1,113 @@
+# general settings
+name: 005_SwinIR-S-GLU_R4S3D30W16_SRx4
+model_type: SwinIRModel
+scale: 4
+num_gpu: 4  # set num_gpu: 0 for cpu mode
+manual_seed: 100
+
+# dataset and data loader settings
+datasets:
+  train:
+    name: DF2K
+    type: PairedImageDataset
+    dataroot_gt: /mnt/petrelfs/puyuandong/Low_level_vision/BSRN_Distillation/datasets/Classical/DF2K/DF2K_train_HR_sub.lmdb
+    dataroot_lq: /mnt/petrelfs/puyuandong/Low_level_vision/BSRN_Distillation/datasets/Classical/DF2K/DF2K_train_LR_bicubic_X4_sub.lmdb
+    filename_tmpl: '{}'
+    io_backend:
+      type: lmdb
+
+    # data loader
+    use_hflip: true
+    use_rot: true
+    use_shuffle: true
+    num_worker_per_gpu: 8 # 6
+    batch_size_per_gpu: 16 # 4
+    gt_size: 256 # 192
+    dataset_enlarge_ratio: 1
+    prefetch_mode: ~
+
+  val_1:
+    name: Set5
+    type: PairedImageDataset
+    dataroot_gt: ./datasets/Classical/Set5/GTmod4
+    dataroot_lq: ./datasets/Classical/Set5/LRbicx4
+    io_backend:
+      type: disk
+  val_2:
+    name: DIV2K
+    type: PairedImageDataset
+    dataroot_gt: /mnt/petrelfs/puyuandong/Low_level_vision/dataset/DIV2K/valid/DIV2K_valid_HR
+    dataroot_lq: /mnt/petrelfs/puyuandong/Low_level_vision/dataset/DIV2K/valid/DIV2K_valid_lr/X4
+    filename_tmpl: '{}x4'
+    io_backend:
+      type: disk
+
+# network structures
+network_g:
+  type: SwinIR_GLU
+  upscale: 4
+  in_chans: 3
+  img_size: 64
+  window_size: 16
+  img_range: 1.
+  depths: [3, 3, 3, 3]
+  embed_dim: 30 #180
+  num_heads: [3, 3, 3, 3]
+  GLU_ratio: 1.34
+  upsampler: 'pixelshuffledirect'
+  resi_connection: '3conv'
+
+
+
+# path
+path:
+  pretrain_network_g: ~
+  strict_load_g: true
+  resume_state: ~
+# training settings
+train:
+  ema_decay: 0.999
+  optim_g:
+    type: Adam
+    lr: !!float 2e-4
+    weight_decay: 0
+    betas: [0.9, 0.99]
+
+  scheduler:
+    type: MultiStepLR
+    milestones: [250000, 400000, 450000, 475000]
+    gamma: 0.5
+
+  total_iter: 500000
+  warmup_iter: -1  # no warm up
+
+  # losses
+  pixel_opt:
+    type: L1Loss
+    loss_weight: 1.0 #[0.5, 0.5]
+    reduction: mean
+
+# validation settings
+val:
+  val_freq: !!float 1e4
+  save_img: false
+
+  metrics:
+    psnr: # metric name, can be arbitrary
+      type: calculate_psnr
+      crop_border: 4
+      test_y_channel: false
+
+# logging settings
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 1e4
+  use_tb_logger: true
+  wandb:
+    project: ~
+    resume_id: ~
+
+# dist training settings
+dist_params:
+  backend: nccl
+  port: 29500
