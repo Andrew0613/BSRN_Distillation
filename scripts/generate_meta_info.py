@@ -76,8 +76,8 @@ import os
 # generated path meta_info
 def generate_meta_info_LSDIR():
 
-    gt_folder = 'datasets/LSDIR'
-    meta_info_txt = 'hct/data/meta_info/meta_info_LSDIR_GT.txt'
+    gt_folder = '/mnt/petrelfs/puyuandong/Low_level_vision/dataset/LSDIR/Train/HR'
+    meta_info_txt = '/mnt/petrelfs/puyuandong/Low_level_vision/dataset/LSDIR/Train/meta_info_LSDIR_GT.txt'
     img_list = sorted(list(scandir(gt_folder, recursive=True, full_path=False)))
 
     with open(meta_info_txt, 'w') as f:

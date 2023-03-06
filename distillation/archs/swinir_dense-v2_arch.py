@@ -550,7 +550,7 @@ class RSTB(nn.Module):
             img_size=img_size, patch_size=patch_size, in_chans=0, embed_dim=dim, norm_layer=None)
 
     def forward(self, x, x_size):
-        return self.patch_embed(self.conv(self.patch_unembed(self.residual_group(x, x_size), x_size))) + x
+        return self.patch_embed(self.conv(self.patch_unembed(self.residual_group(x, x_size), x_size))) # + x
 
     def flops(self):
         flops = 0
@@ -686,8 +686,8 @@ class UpsampleOneStep(nn.Sequential):
 
 
 @ARCH_REGISTRY.register()
-class SwinIR_Efficient(nn.Module):
-    r""" SwinIR
+class SwinIR_Dense_v2(nn.Module):
+    r""" SwinIR (Remove the skip connection in RSTB)
         A PyTorch impl of : `SwinIR: Image Restoration Using Swin Transformer`, based on Swin Transformer.
     Args:
         img_size (int | tuple(int)): Input image size. Default 64
@@ -736,7 +736,7 @@ class SwinIR_Efficient(nn.Module):
                  upsampler='',
                  resi_connection='1conv',
                  **kwargs):
-        super(SwinIR_Efficient, self).__init__()
+        super(SwinIR_Dense_v2, self).__init__()
         num_in_ch = in_chans
         num_out_ch = in_chans
         num_feat = 64
@@ -790,6 +790,7 @@ class SwinIR_Efficient(nn.Module):
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]  # stochastic depth decay rule
 
         # build Residual Swin Transformer blocks (RSTB)
+        self.dense_result = []
         self.layers = nn.ModuleList()
         for i_layer in range(self.num_layers):
             layer = RSTB(
@@ -813,19 +814,29 @@ class SwinIR_Efficient(nn.Module):
             self.layers.append(layer)
         self.norm = norm_layer(self.num_features)
         self.resi_connection = resi_connection
+
         # build the last conv layer in deep feature extraction
-        if resi_connection == '1conv':
-            self.conv_after_body = nn.Conv2d(embed_dim, embed_dim, 3, 1, 1)
-        elif resi_connection == '3conv':
-            # to save parameters and memory
-            self.conv_after_body = nn.Sequential(
-                nn.Conv2d(embed_dim, embed_dim // 4, 3, 1, 1), nn.LeakyReLU(negative_slope=0.2, inplace=True),
-                nn.Conv2d(embed_dim // 4, embed_dim // 4, 1, 1, 0), nn.LeakyReLU(negative_slope=0.2, inplace=True),
-                nn.Conv2d(embed_dim // 4, embed_dim, 3, 1, 1))
-        elif resi_connection == 'depthwise':
-            self.conv_after_body = nn.Sequential(
-                nn.Conv2d(embed_dim, embed_dim, 3, 1, 1, groups=embed_dim), nn.LeakyReLU(negative_slope=0.2, inplace=True),
-                nn.Conv2d(embed_dim, embed_dim, 1, 1, 0), nn.LeakyReLU(negative_slope=0.2, inplace=True),
+        # if resi_connection == '1conv':
+        #     self.conv_after_body = nn.Conv2d(embed_dim, embed_dim, 3, 1, 1)
+        # elif resi_connection == '3conv':
+        #     # to save parameters and memory
+        #     self.conv_after_body = nn.Sequential(
+        #         nn.Conv2d(embed_dim, embed_dim // 4, 3, 1, 1), nn.LeakyReLU(negative_slope=0.2, inplace=True),
+        #         nn.Conv2d(embed_dim // 4, embed_dim // 4, 1, 1, 0), nn.LeakyReLU(negative_slope=0.2, inplace=True),
+        #         nn.Conv2d(embed_dim // 4, embed_dim, 3, 1, 1))
+        # elif resi_connection == 'depthwise':
+        #     self.conv_after_body = nn.Sequential(
+        #         nn.Conv2d(embed_dim, embed_dim, 3, 1, 1, groups=embed_dim), nn.LeakyReLU(negative_slope=0.2, inplace=True),
+        #         nn.Conv2d(embed_dim, embed_dim, 1, 1, 0), nn.LeakyReLU(negative_slope=0.2, inplace=True),
+        #     )
+
+        # build the feature fusion layer in deep feature extraction
+        self.fusion = nn.Sequential(
+            nn.Conv2d(embed_dim * self.num_layers, embed_dim, 1, 1, 0),
+            nn.GELU(),
+            nn.Conv2d(embed_dim, embed_dim, 1, 1, 0),
+            nn.Conv2d(embed_dim, embed_dim, 3, 1, 1, groups=embed_dim), nn.LeakyReLU(negative_slope=0.2, inplace=True),
+            nn.Conv2d(embed_dim, embed_dim, 1, 1, 0), nn.LeakyReLU(negative_slope=0.2, inplace=True),
             )
 
         # ------------------------- 3, high quality image reconstruction ------------------------- #
@@ -873,6 +884,7 @@ class SwinIR_Efficient(nn.Module):
         return {'relative_position_bias_table'}
 
     def forward_features(self, x):
+        dense_results = []
         x_size = (x.shape[2], x.shape[3])
         x = self.patch_embed(x)
         if self.ape:
@@ -881,11 +893,14 @@ class SwinIR_Efficient(nn.Module):
 
         for layer in self.layers:
             x = layer(x, x_size)
+            dense = self.norm(x)
+            dense = self.patch_unembed(dense, x_size)
+            dense_results.append(dense)
 
-        x = self.norm(x)  # b seq_len c
-        x = self.patch_unembed(x, x_size)
+        # x = self.norm(x)  # b seq_len c
+        # x = self.patch_unembed(x, x_size)
 
-        return x
+        return dense_results
 
     def forward(self, x):
         self.mean = self.mean.type_as(x)
@@ -900,7 +915,9 @@ class SwinIR_Efficient(nn.Module):
         elif self.upsampler == 'pixelshuffledirect':
             # for lightweight SR
             x = self.conv_first(x)
-            x = self.conv_after_body(self.forward_features(x)) + x
+            # x = self.conv_after_body(self.forward_features(x)) + x
+            features = torch.cat(self.forward_features(x),dim=1)
+            x = self.fusion(features) + x
             x = self.upsample(x)
         elif self.upsampler == 'nearest+conv':
             # for real-world SR
@@ -927,12 +944,11 @@ class SwinIR_Efficient(nn.Module):
         flops += self.patch_embed.flops()
         for layer in self.layers:
             flops += layer.flops()
-        if self.resi_connection == "1conv":
-            flops += h * w * self.embed_dim * self.embed_dim * 9
-        elif self.resi_connection == "3conv":
-            flops += h * w * self.embed_dim * self.embed_dim//4 * 9
-            flops += h * w * self.embed_dim//4 * self.embed_dim//4 * 1
-            flops += h * w * self.embed_dim//4 * self.embed_dim * 9
+        # fusion
+        flops += h * w * self.embed_dim * self.embed_dim * self.num_layers * 1
+        flops += h * w * self.embed_dim * self.embed_dim * 1
+        flops += h * w * self.embed_dim * 9
+        flops += h * w * self.embed_dim * self.embed_dim * 1
 
         flops += self.upsample.flops()
         return flops
@@ -943,17 +959,17 @@ if __name__ == '__main__':
     window_size = 16
     height = (1024 // upscale // window_size + 1) * window_size
     width = (720 // upscale // window_size + 1) * window_size
-    model = SwinIR_Efficient(
+    model = SwinIR_Dense_v2(
         upscale=4,
         img_size=(height, width),
         window_size=window_size,
         img_range=1.,
-        depths=[2,2,2,2,2,2],
+        depths=[4, 4, 4],
         embed_dim=30,
-        num_heads=[3, 3, 3, 3, 3, 3],
+        num_heads=[3, 3, 3],
         mlp_ratio=2,
         upsampler='pixelshuffledirect',
-        resi_connection='3conv')
+        resi_connection='3conv',)
     # print(model)
     net_params = sum(map(lambda x: x.numel(), model.parameters()))
     print(f"With the height {height} and width {width}, the model's parameters are {net_params / 1e3:.2f}K, and the FLOPs are {model.flops() / 1e9:.2f}G ")

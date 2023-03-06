@@ -916,7 +916,8 @@ class SwinIR_Dense(nn.Module):
             # for lightweight SR
             x = self.conv_first(x)
             # x = self.conv_after_body(self.forward_features(x)) + x
-            x = self.fusion(self.forward_features(x)) + x
+            features = torch.cat(self.forward_features(x),dim=1)
+            x = self.fusion(features) + x
             x = self.upsample(x)
         elif self.upsampler == 'nearest+conv':
             # for real-world SR
@@ -943,15 +944,6 @@ class SwinIR_Dense(nn.Module):
         flops += self.patch_embed.flops()
         for layer in self.layers:
             flops += layer.flops()
-        # if self.resi_connection == "1conv":
-        #     flops += h * w * self.embed_dim * self.embed_dim * 9
-        # elif self.resi_connection == "3conv":
-        #     flops += h * w * self.embed_dim * self.embed_dim//4 * 9
-        #     flops += h * w * self.embed_dim//4 * self.embed_dim//4 * 1
-        #     flops += h * w * self.embed_dim//4 * self.embed_dim * 9
-        # elif self.resi_connection == "depthwise":
-        #     flops += h * w * self.embed_dim * self.embed_dim * 9
-
         # fusion
         flops += h * w * self.embed_dim * self.embed_dim * self.num_layers * 1
         flops += h * w * self.embed_dim * self.embed_dim * 1
@@ -972,10 +964,10 @@ if __name__ == '__main__':
         img_size=(height, width),
         window_size=window_size,
         img_range=1.,
-        depths=[3, 3, 3, 3],
+        depths=[4, 4, 4],
         embed_dim=30,
-        num_heads=[3, 3, 3, 3],
-        mlp_ratio=2,
+        num_heads=[3, 3, 3],
+        mlp_ratio=4,
         upsampler='pixelshuffledirect',
         resi_connection='3conv',)
     # print(model)

@@ -87,7 +87,7 @@ def window_reverse(windows, window_size, h, w):
     return x
 
 
-class WindowAttention(nn.Module):
+class WindowAnchorAttention(nn.Module):
     r""" Window based multi-head self attention (W-MSA) module with relative position bias.
     It supports both of shifted and non-shifted window.
     Args:
@@ -108,7 +108,6 @@ class WindowAttention(nn.Module):
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = qk_scale or head_dim**-0.5
-
         # define a parameter table of relative position bias
         self.relative_position_bias_table = nn.Parameter(
             torch.zeros((2 * window_size[0] - 1) * (2 * window_size[1] - 1), num_heads))  # 2*Wh-1 * 2*Ww-1, nH
@@ -129,7 +128,8 @@ class WindowAttention(nn.Module):
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
-
+        self.anchor_pool = nn.AvgPool1d(kernel_size=3, stride=3, padding=1) # l -> (l-3)/2 + 1
+        self.anchor_proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
         trunc_normal_(self.relative_position_bias_table, std=.02)
@@ -145,8 +145,14 @@ class WindowAttention(nn.Module):
         qkv = self.qkv(x).reshape(b_, n, 3, self.num_heads, c // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
 
-        q = q * self.scale
-        attn = (q @ k.transpose(-2, -1))
+        anchor = self.anchor_proj(self.anchor_pool(x.permute(0, 2, 1)).permute(0, 2, 1))
+        anchor = anchor.view(b_, self.num_heads, -1, c//self.num_heads)
+        anchor = anchor * self.scale
+        me = self.softmax(q @ anchor.transpose(-2, -1))
+        md = self.softmax(anchor @ k.transpose(-2, -1))
+        attn = me @ md
+
+        # attn = (q @ k.transpose(-2, -1))
 
         relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
             self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)  # Wh*Ww,Wh*Ww,nH
@@ -157,9 +163,10 @@ class WindowAttention(nn.Module):
             nw = mask.shape[0]
             attn = attn.view(b_ // nw, nw, self.num_heads, n, n) + mask.unsqueeze(1).unsqueeze(0)
             attn = attn.view(-1, self.num_heads, n, n)
-            attn = self.softmax(attn)
+            # attn = self.softmax(attn)
         else:
-            attn = self.softmax(attn)
+            # attn = self.softmax(attn)
+            attn = attn
 
         attn = self.attn_drop(attn)
 
@@ -176,8 +183,10 @@ class WindowAttention(nn.Module):
         flops = 0
         # qkv = self.qkv(x)
         flops += n * self.dim * 3 * self.dim
-        # attn = (q @ k.transpose(-2, -1))
-        flops += self.num_heads * n * (self.dim // self.num_heads) * n
+        # attn = (q @ achor.transpose(-2, -1))
+        flops += self.num_heads * n * (self.dim // self.num_heads) * ((n - 3 + 2)//3 + 1)
+        # attn = (anchor @ k.transpose(-2, -1))
+        flops += self.num_heads * n * (self.dim // self.num_heads) * ((n - 3 + 2)//3 + 1)
         #  x = (attn @ v)
         flops += self.num_heads * n * n * (self.dim // self.num_heads)
         # x = self.proj(x)
@@ -231,7 +240,7 @@ class SwinTransformerBlock(nn.Module):
         assert 0 <= self.shift_size < self.window_size, 'shift_size must in 0-window_size'
 
         self.norm1 = norm_layer(dim)
-        self.attn = WindowAttention(
+        self.attn = WindowAnchorAttention(
             dim,
             window_size=to_2tuple(self.window_size),
             num_heads=num_heads,
@@ -686,7 +695,7 @@ class UpsampleOneStep(nn.Sequential):
 
 
 @ARCH_REGISTRY.register()
-class SwinIR_Efficient(nn.Module):
+class SwinIR_Anchor(nn.Module):
     r""" SwinIR
         A PyTorch impl of : `SwinIR: Image Restoration Using Swin Transformer`, based on Swin Transformer.
     Args:
@@ -736,7 +745,7 @@ class SwinIR_Efficient(nn.Module):
                  upsampler='',
                  resi_connection='1conv',
                  **kwargs):
-        super(SwinIR_Efficient, self).__init__()
+        super(SwinIR_Anchor, self).__init__()
         num_in_ch = in_chans
         num_out_ch = in_chans
         num_feat = 64
@@ -943,14 +952,14 @@ if __name__ == '__main__':
     window_size = 16
     height = (1024 // upscale // window_size + 1) * window_size
     width = (720 // upscale // window_size + 1) * window_size
-    model = SwinIR_Efficient(
+    model = SwinIR_Anchor(
         upscale=4,
         img_size=(height, width),
         window_size=window_size,
         img_range=1.,
-        depths=[2,2,2,2,2,2],
+        depths=[4, 4, 4],
         embed_dim=30,
-        num_heads=[3, 3, 3, 3, 3, 3],
+        num_heads=[3, 3, 3],
         mlp_ratio=2,
         upsampler='pixelshuffledirect',
         resi_connection='3conv')
